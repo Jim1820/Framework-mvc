@@ -3,6 +3,7 @@
 /home/jimmy/s4/WebDynamique/SpringBoot/framework/src/main/java/com/example/annotation/HttpMethod.java
 /home/jimmy/s4/WebDynamique/SpringBoot/framework/src/main/java/com/example/annotation/UrlMapping.java
 /home/jimmy/s4/WebDynamique/SpringBoot/framework/src/main/java/com/example/controller/FrontController.java
+/home/jimmy/s4/WebDynamique/SpringBoot/framework/src/main/java/com/example/modelview/ModelView.java
 /home/jimmy/s4/WebDynamique/SpringBoot/framework/src/main/java/com/example/scanner/ControllerScanner.java
 /home/jimmy/s4/WebDynamique/SpringBoot/framework/src/main/java/com/example/scanner/PackageScanner.java
 /home/jimmy/s4/WebDynamique/SpringBoot/framework/src/main/java/com/example/utils/Route.java

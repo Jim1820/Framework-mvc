@@ -1,31 +1,47 @@
 package com.example.utils;
-
+import java.lang.reflect.Method;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.Map;
 
+import com.example.annotation.HttpMethod;
+
 public class RouteMapping {
 
-    private Map<String, Route> routes = new HashMap<>();
+    private final Map<String, EnumMap<HttpMethod, Route>> routes = new HashMap<>();
 
-    public void addRoute(String url, Route route) {
+    public void addRoute(String url,
+                         HttpMethod httpMethod,
+                         Class<?> controller,
+                         Method method) {
 
-        for (Route r : routes.values()) {
+        EnumMap<HttpMethod, Route> methodRoutes =
+                routes.computeIfAbsent(url, u -> new EnumMap<>(HttpMethod.class));
 
-            if (r.equals(route)) {
-                throw new RuntimeException(
-                        "Route déjà déclarée : " + url);
-            }
+        if (methodRoutes.containsKey(httpMethod)) {
+            throw new IllegalStateException(
+                    "La route " + httpMethod + " " + url + " existe déjà."
+            );
         }
 
-        routes.put(url, route);
+        methodRoutes.put(
+                httpMethod,
+                new Route(controller, method)
+        );
     }
 
-    public Route getRoute(String url) {
-        return routes.get(url);
+    public Route getRoute(String url, HttpMethod httpMethod) {
+
+        EnumMap<HttpMethod, Route> methodRoutes = routes.get(url);
+
+        if (methodRoutes == null) {
+            return null;
+        }
+
+        return methodRoutes.get(httpMethod);
     }
 
-    public Map<String, Route> getRoutes() {
+    public Map<String, EnumMap<HttpMethod, Route>> getRoutes() {
         return routes;
     }
-
 }
