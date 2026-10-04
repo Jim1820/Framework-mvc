@@ -19,6 +19,7 @@ import com.example.scanner.ControllerScanner;
 
 import com.example.utils.Route;
 import com.example.utils.RouteMapping;
+import com.example.utils.JsonConverter;
 
 public class FrontController extends HttpServlet {
 
@@ -26,6 +27,7 @@ public class FrontController extends HttpServlet {
     private RouteMapping routeMapping = new RouteMapping();
     private String viewPrefix;
     private String viewSuffix;
+    private JsonConverter jsonConverter;
 
     public void setClassList(String packageName) {
         System.out.println("=== INIT EXECUTEE ===");
@@ -81,7 +83,7 @@ public class FrontController extends HttpServlet {
     public void init() throws ServletException {
 
         super.init();
-
+        jsonConverter = new JsonConverter();
         viewPrefix = getServletConfig().getInitParameter("view-prefix");
         viewSuffix = getServletConfig().getInitParameter("view-suffix");
 
@@ -150,16 +152,30 @@ public class FrontController extends HttpServlet {
 
                     }
 
-                    System.out.println("Vue = " + mv.getView());
+                    if (mappedRoute.isRestApi()) {
 
-                    String path = resolve(mv.getView());
+                        resp.setContentType("application/json");
+                        resp.setCharacterEncoding("UTF-8");
 
-                    System.out.println("Path = " + path);
+                        String json = jsonConverter.toJson(result);
 
-                    System.out.println(req.getServletContext().getRealPath(path));
+                        resp.getWriter().write(json);
 
-                    req.getRequestDispatcher(path)
-                            .forward(req, resp);
+                    }
+
+                    else {
+                        System.out.println("Vue = " + mv.getView());
+
+                        String path = resolve(mv.getView());
+
+                        System.out.println("Path = " + path);
+
+                        System.out.println(req.getServletContext().getRealPath(path));
+
+                        req.getRequestDispatcher(path)
+                                .forward(req, resp);
+                    }
+
                 } else {
                     resp.getWriter().println("URL : " + url);
                     resp.getWriter().println(
@@ -170,7 +186,6 @@ public class FrontController extends HttpServlet {
                 e.printStackTrace();
             }
         }
-
     }
 
     private String getRelativeUrl(HttpServletRequest req) {

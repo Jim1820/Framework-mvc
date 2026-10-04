@@ -2,6 +2,8 @@ package com.example.utils;
 
 import java.lang.reflect.Method;
 
+import com.example.annotation.RestApi;
+
 public class Route {
 
     private final Class<?> controller;
@@ -19,4 +21,10 @@ public class Route {
     public Method getMethod() {
         return method;
     }
+
+    public boolean isRestApi() {
+        return controller.isAnnotationPresent(RestApi.class)
+                || method.isAnnotationPresent(RestApi.class);
+    }
+
 }
