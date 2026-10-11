@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -107,6 +108,30 @@ public class FrontController extends HttpServlet {
         processRequest(req, resp);
     }
 
+    public class RequestData {
+
+        private Map<String, String> parameters;
+
+        public RequestData(HttpServletRequest request) {
+
+            parameters = new HashMap<>();
+
+            request.getParameterMap().forEach((key, values) -> {
+                if (values.length > 0) {
+                    parameters.put(key, values[0]);
+                }
+            });
+        }
+
+        public String get(String name) {
+            return parameters.get(name);
+        }
+
+        public Map<String, String> getAll() {
+            return parameters;
+        }
+    }
+
     private void processRequest(HttpServletRequest req,
             HttpServletResponse resp)
             throws IOException {
@@ -140,7 +165,17 @@ public class FrontController extends HttpServlet {
                         .newInstance();
 
                 Object result = mappedRoute.getMethod().invoke(controller);
-                if (result instanceof ModelView) {
+
+                if (mappedRoute.isRestApi()) {
+
+                    resp.setContentType("application/json");
+                    resp.setCharacterEncoding("UTF-8");
+
+                    String json = jsonConverter.toJson(result);
+
+                    resp.getWriter().write(json);
+
+                } else if (result instanceof ModelView) {
 
                     ModelView mv = (ModelView) result;
 
@@ -149,37 +184,26 @@ public class FrontController extends HttpServlet {
                         req.setAttribute(
                                 entry.getKey(),
                                 entry.getValue());
-
                     }
 
-                    if (mappedRoute.isRestApi()) {
+                    System.out.println("Vue = " + mv.getView());
 
-                        resp.setContentType("application/json");
-                        resp.setCharacterEncoding("UTF-8");
+                    String path = resolve(mv.getView());
 
-                        String json = jsonConverter.toJson(result);
+                    System.out.println("Path = " + path);
 
-                        resp.getWriter().write(json);
+                    System.out.println(
+                            req.getServletContext().getRealPath(path));
 
-                    }
-
-                    else {
-                        System.out.println("Vue = " + mv.getView());
-
-                        String path = resolve(mv.getView());
-
-                        System.out.println("Path = " + path);
-
-                        System.out.println(req.getServletContext().getRealPath(path));
-
-                        req.getRequestDispatcher(path)
-                                .forward(req, resp);
-                    }
+                    req.getRequestDispatcher(path)
+                            .forward(req, resp);
 
                 } else {
+
                     resp.getWriter().println("URL : " + url);
                     resp.getWriter().println(
-                            "Méthode Java : " + mappedRoute.getMethod().getName());
+                            "Méthode Java : "
+                                    + mappedRoute.getMethod().getName());
                 }
 
             } catch (Exception e) {
