@@ -4,10 +4,14 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpSession;
+import jakarta.servlet.http.Part;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.PrintWriter;
 import java.lang.reflect.Method;
+import java.lang.reflect.Parameter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -17,10 +21,13 @@ import com.example.annotation.HttpMethod;
 import com.example.annotation.UrlMapping;
 import com.example.modelview.ModelView;
 import com.example.scanner.ControllerScanner;
-
+import com.example.session.SessionManager;
+import com.example.upload.Mapfile;
 import com.example.utils.Route;
 import com.example.utils.RouteMapping;
 import com.example.utils.JsonConverter;
+import com.example.annotation.Param;
+import com.example.session.Session;
 
 public class FrontController extends HttpServlet {
 
@@ -29,6 +36,7 @@ public class FrontController extends HttpServlet {
     private String viewPrefix;
     private String viewSuffix;
     private JsonConverter jsonConverter;
+    private final SessionManager sessionManager = new SessionManager();
 
     public void setClassList(String packageName) {
         System.out.println("=== INIT EXECUTEE ===");
@@ -132,17 +140,145 @@ public class FrontController extends HttpServlet {
         }
     }
 
+    private Object resolveParamValue(
+            HttpServletRequest req,
+            String paramName,
+            Class<?> parameterType) throws Exception {
+
+        // 1. Gestion des fichiers envoyés par formulaire
+        if (parameterType.equals(Mapfile.class)) {
+
+            Part part = req.getPart(paramName);
+
+            if (part == null
+                    || part.getSubmittedFileName() == null
+                    || part.getSubmittedFileName().isBlank()
+                    || part.getSize() == 0) {
+                return null;
+            }
+
+            // Récupérer uniquement le nom du fichier
+            String nom = java.nio.file.Paths
+                    .get(part.getSubmittedFileName())
+                    .getFileName()
+                    .toString();
+
+            String type = part.getContentType();
+
+            byte[] contenu;
+
+            try (InputStream input = part.getInputStream()) {
+                contenu = input.readAllBytes();
+            }
+
+            // Construire l'objet Mapfile
+            return new Mapfile(nom, type, contenu);
+        }
+
+        // 2. Gestion des paramètres HTTP classiques
+        String value = req.getParameter(paramName);
+
+        if (value == null) {
+            return null;
+        }
+
+        if (parameterType.equals(String.class)) {
+            return value;
+        }
+
+        if (parameterType.equals(int.class)
+                || parameterType.equals(Integer.class)) {
+            return Integer.valueOf(value);
+        }
+
+        if (parameterType.equals(long.class)
+                || parameterType.equals(Long.class)) {
+            return Long.valueOf(value);
+        }
+
+        if (parameterType.equals(double.class)
+                || parameterType.equals(Double.class)) {
+            return Double.valueOf(value);
+        }
+
+        if (parameterType.equals(boolean.class)
+                || parameterType.equals(Boolean.class)) {
+            return Boolean.valueOf(value);
+        }
+
+        throw new IllegalArgumentException(
+                "Type non pris en charge : "
+                        + parameterType.getName());
+    }
+
+    private Object[] resolveParameters(
+            Method method,
+            HttpServletRequest req) throws Exception {
+
+        Parameter[] parameters = method.getParameters();
+
+        Object[] arguments = new Object[parameters.length];
+
+        for (int i = 0; i < parameters.length; i++) {
+
+            Parameter parameter = parameters[i];
+            Class<?> parameterType = parameter.getType();
+
+            // 1. Session personnalisée du framework
+            if (parameterType.equals(Session.class)) {
+
+                arguments[i] = sessionManager.getSession(req);
+
+            }
+
+            // 2. Session HTTP native
+            else if (parameterType.equals(HttpSession.class)) {
+
+                arguments[i] = req.getSession();
+
+            }
+
+            // 3. Paramètres annotés avec @Param
+            else if (parameter.isAnnotationPresent(Param.class)) {
+
+                Param annotation = parameter.getAnnotation(Param.class);
+
+                String paramName = annotation.value();
+                
+                arguments[i] = resolveParamValue(
+                        req,
+                        paramName,
+                        parameterType);
+            }
+
+            // 4. Paramètre non pris en charge
+            else {
+
+                throw new IllegalArgumentException(
+                        "Paramètre non pris en charge : "
+                                + parameter.getName()
+                                + " dans la méthode "
+                                + method.getName());
+            }
+        }
+
+        return arguments;
+    }
+
     private void processRequest(HttpServletRequest req,
-            HttpServletResponse resp)
-            throws IOException {
+            HttpServletResponse resp) throws IOException {
 
         String url = getRelativeUrl(req);
 
         HttpMethod requestMethod = HttpMethod.valueOf(req.getMethod());
 
         Route mappedRoute = routeMapping.getRoute(url, requestMethod);
+
         if (mappedRoute == null) {
+
             resp.setContentType("text/plain");
+            resp.setCharacterEncoding("UTF-8");
+
             resp.getWriter().println("ContextPath : " + req.getContextPath());
             resp.getWriter().println("Méthode HTTP : " + req.getMethod());
             resp.getWriter().println("URL recue : " + url);
@@ -155,59 +291,74 @@ public class FrontController extends HttpServlet {
             out.println("Aucune méthode trouvée pour : " + url);
 
             for (String supportedUrl : routeMapping.getRoutes().keySet()) {
-                out.println("<li>" + supportedUrl + "</li>");
+                out.println(supportedUrl);
             }
 
-        } else {
-            try {
-                Object controller = mappedRoute.getController()
-                        .getDeclaredConstructor()
-                        .newInstance();
+            return;
+        }
 
-                Object result = mappedRoute.getMethod().invoke(controller);
+        try {
+            // 1. Créer une instance du contrôleur
+            Object controller = mappedRoute.getController()
+                    .getDeclaredConstructor()
+                    .newInstance();
 
-                if (mappedRoute.isRestApi()) {
+            // 2. Récupérer la méthode d'action
+            Method method = mappedRoute.getMethod();
 
-                    resp.setContentType("application/json");
-                    resp.setCharacterEncoding("UTF-8");
+            // 3. Préparer les paramètres de la méthode
+            Object[] arguments = resolveParameters(method, req);
 
-                    String json = jsonConverter.toJson(result);
+            Object result = method.invoke(controller, arguments);
 
-                    resp.getWriter().write(json);
+            // 5. Traiter le résultat
+            if (mappedRoute.isRestApi()) {
 
-                } else if (result instanceof ModelView) {
+                resp.setContentType("application/json");
+                resp.setCharacterEncoding("UTF-8");
 
-                    ModelView mv = (ModelView) result;
+                String json = jsonConverter.toJson(result);
 
-                    for (Map.Entry<String, Object> entry : mv.getModel().entrySet()) {
+                resp.getWriter().write(json);
 
-                        req.setAttribute(
-                                entry.getKey(),
-                                entry.getValue());
-                    }
+            } else if (result instanceof ModelView) {
 
-                    System.out.println("Vue = " + mv.getView());
+                ModelView mv = (ModelView) result;
 
-                    String path = resolve(mv.getView());
+                for (Map.Entry<String, Object> entry : mv.getModel().entrySet()) {
 
-                    System.out.println("Path = " + path);
-
-                    System.out.println(
-                            req.getServletContext().getRealPath(path));
-
-                    req.getRequestDispatcher(path)
-                            .forward(req, resp);
-
-                } else {
-
-                    resp.getWriter().println("URL : " + url);
-                    resp.getWriter().println(
-                            "Méthode Java : "
-                                    + mappedRoute.getMethod().getName());
+                    req.setAttribute(
+                            entry.getKey(),
+                            entry.getValue());
                 }
 
-            } catch (Exception e) {
-                e.printStackTrace();
+                System.out.println("Vue = " + mv.getView());
+
+                String path = resolve(mv.getView());
+
+                System.out.println("Path = " + path);
+
+                System.out.println(
+                        req.getServletContext().getRealPath(path));
+
+                req.getRequestDispatcher(path).forward(req, resp);
+
+            } else if (result != null) {
+
+                resp.getWriter().println("URL : " + url);
+
+                resp.getWriter().println(
+                        "Méthode Java : " + method.getName());
+            }
+
+        } catch (Exception e) {
+
+            e.printStackTrace();
+
+            if (!resp.isCommitted()) {
+                resp.sendError(
+                        HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
+                        "Erreur lors de l'exécution de la méthode d'action.");
             }
         }
     }
