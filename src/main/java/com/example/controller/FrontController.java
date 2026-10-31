@@ -43,30 +43,44 @@ public class FrontController extends HttpServlet {
     private ConcurrentMap<String, Session> sessionRegistry;
     private String authAttribute;
     private String roleAttribute;
+    private final Map<Class<?>, Object> controllerInstances = new HashMap<>();
 
-    public void setClassList(String packageName) {
+    public void setClassList(String packageName) throws ServletException {
         System.out.println("=== INIT EXECUTEE ===");
 
         try {
+            List<Class<?>> controllers = ControllerScanner.getControllers(packageName);
 
-            List<Class<?>> controllers = ControllerScanner.getControllers(
-                    packageName);
+            if (controllers.isEmpty()) {
+                throw new ServletException(
+                        "Aucun contrôleur trouvé dans le package : " + packageName);
+            }
 
-            System.out.println(
-                    "Nombre controllers : "
-                            + controllers.size());
+            System.out.println("Nombre controllers : " + controllers.size());
 
             for (Class<?> c : controllers) {
 
                 classList.add(c);
 
-                System.out.println(
-                        "Controller trouvé : "
-                                + c.getName());
+                // Une seule instance par contrôleur, créée au démarrage
+                controllerInstances.put(
+                        c,
+                        c.getDeclaredConstructor().newInstance());
+
+                System.out.println("Controller trouvé : " + c.getName());
             }
 
+        } catch (NoSuchMethodException e) {
+            throw new ServletException(
+                    "Un contrôleur doit avoir un constructeur public sans argument : "
+                            + e.getMessage(),
+                    e);
+
         } catch (Exception e) {
-            e.printStackTrace();
+            throw new ServletException(
+                    "Erreur lors du scan ou de l'instanciation des contrôleurs : "
+                            + e.getMessage(),
+                    e);
         }
     }
 
@@ -141,8 +155,10 @@ public class FrontController extends HttpServlet {
         viewPrefix = getServletConfig().getInitParameter("view-prefix");
         viewSuffix = getServletConfig().getInitParameter("view-suffix");
 
-        setClassList("main.java.controller");
-        setMapping();
+        if (viewPrefix == null || viewSuffix == null) {
+            throw new ServletException(
+                    "Paramètres 'view-prefix' et 'view-suffix' manquants dans web.xml");
+        }
 
         Object registry = getServletContext()
                 .getAttribute(SessionListener.SESSION_REGISTRY);
@@ -164,6 +180,17 @@ public class FrontController extends HttpServlet {
         }
 
         sessionRegistry = (ConcurrentMap<String, Session>) registry;
+
+        // 2. Scanner et instancier les contrôleurs (lève ServletException si invalide)
+        setClassList("main.java.controller");
+
+        // 3. Construire les routes (route en double = échec au démarrage)
+        try {
+            setMapping();
+        } catch (IllegalStateException e) {
+            throw new ServletException(
+                    "Erreur de mapping des routes : " + e.getMessage(), e);
+        }
     }
 
     @Override
@@ -381,10 +408,14 @@ public class FrontController extends HttpServlet {
                 return; // erreur 401/403 déjà envoyée
             }
 
-            // 3. Créer une instance du contrôleur
-            Object controller = mappedRoute.getController()
-                    .getDeclaredConstructor()
-                    .newInstance();
+            // 3. Récupérer l'instance singleton du contrôleur
+            Object controller = controllerInstances.get(mappedRoute.getController());
+
+            if (controller == null) {
+                throw new IllegalStateException(
+                        "Aucune instance pour le contrôleur : "
+                                + mappedRoute.getController().getName());
+            }
 
             // 4. Préparer les paramètres de la méthode
             Object[] arguments = resolveParameters(method, req);
