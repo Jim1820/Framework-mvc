@@ -13,21 +13,25 @@ import java.io.PrintWriter;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentMap;
 
+import com.example.annotation.Auth;
 import com.example.annotation.HttpMethod;
 import com.example.annotation.UrlMapping;
 import com.example.modelview.ModelView;
 import com.example.scanner.ControllerScanner;
-import com.example.session.SessionManager;
 import com.example.upload.Mapfile;
 import com.example.utils.Route;
 import com.example.utils.RouteMapping;
+import com.example.utils.FrameworkContextListener;
 import com.example.utils.JsonConverter;
 import com.example.annotation.Param;
 import com.example.session.Session;
+import com.example.session.SessionListener;
 
 public class FrontController extends HttpServlet {
 
@@ -36,7 +40,9 @@ public class FrontController extends HttpServlet {
     private String viewPrefix;
     private String viewSuffix;
     private JsonConverter jsonConverter;
-    private final SessionManager sessionManager = new SessionManager();
+    private ConcurrentMap<String, Session> sessionRegistry;
+    private String authAttribute;
+    private String roleAttribute;
 
     public void setClassList(String packageName) {
         System.out.println("=== INIT EXECUTEE ===");
@@ -88,7 +94,46 @@ public class FrontController extends HttpServlet {
         }
     }
 
+    private boolean checkAuth(Method method,
+            HttpServletRequest req,
+            HttpServletResponse resp) throws IOException {
+
+        Auth auth = method.getAnnotation(Auth.class);
+
+        // Méthode non protégée : accès libre
+        if (auth == null) {
+            return true;
+        }
+
+        // false = ne crée pas de session si elle n'existe pas
+        HttpSession httpSession = req.getSession(false);
+
+        if (httpSession == null || httpSession.getAttribute(authAttribute) == null) {
+            resp.sendError(HttpServletResponse.SC_UNAUTHORIZED,
+                    "Authentification requise pour accéder à cette ressource.");
+            return false;
+        }
+
+        String[] rolesAutorises = auth.roles();
+
+        if (rolesAutorises.length > 0) {
+            Object roleUtilisateur = httpSession.getAttribute(roleAttribute);
+
+            boolean autorise = roleUtilisateur != null
+                    && Arrays.asList(rolesAutorises).contains(roleUtilisateur.toString());
+
+            if (!autorise) {
+                resp.sendError(HttpServletResponse.SC_FORBIDDEN,
+                        "Accès refusé : rôle insuffisant.");
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     @Override
+    @SuppressWarnings("unchecked")
     public void init() throws ServletException {
 
         super.init();
@@ -98,6 +143,27 @@ public class FrontController extends HttpServlet {
 
         setClassList("main.java.controller");
         setMapping();
+
+        Object registry = getServletContext()
+                .getAttribute(SessionListener.SESSION_REGISTRY);
+
+        authAttribute = (String) getServletContext()
+                .getAttribute(FrameworkContextListener.AUTH_ATTRIBUTE);
+        roleAttribute = (String) getServletContext()
+                .getAttribute(FrameworkContextListener.ROLE_ATTRIBUTE);
+
+        if (authAttribute == null || roleAttribute == null) {
+            throw new ServletException(
+                    "FrameworkContextListener n'a pas été exécuté au démarrage.");
+        }
+
+        if (registry == null) {
+            throw new ServletException(
+                    "Registre de sessions non initialisé : "
+                            + "SessionListener n'a pas été exécuté au démarrage.");
+        }
+
+        sessionRegistry = (ConcurrentMap<String, Session>) registry;
     }
 
     @Override
@@ -114,6 +180,15 @@ public class FrontController extends HttpServlet {
             throws ServletException, IOException {
 
         processRequest(req, resp);
+    }
+
+    private Session getSession(HttpServletRequest req) {
+
+        HttpSession httpSession = req.getSession();
+
+        return sessionRegistry.computeIfAbsent(
+                httpSession.getId(),
+                key -> new Session(httpSession));
     }
 
     public class RequestData {
@@ -225,9 +300,10 @@ public class FrontController extends HttpServlet {
             Class<?> parameterType = parameter.getType();
 
             // 1. Session personnalisée du framework
+            // 1. Session personnalisée du framework
             if (parameterType.equals(Session.class)) {
 
-                arguments[i] = sessionManager.getSession(req);
+                arguments[i] = getSession(req); // avant : sessionManager.getSession(req)
 
             }
 
@@ -244,7 +320,7 @@ public class FrontController extends HttpServlet {
                 Param annotation = parameter.getAnnotation(Param.class);
 
                 String paramName = annotation.value();
-                
+
                 arguments[i] = resolveParamValue(
                         req,
                         paramName,
@@ -296,17 +372,21 @@ public class FrontController extends HttpServlet {
 
             return;
         }
-
         try {
-            // 1. Créer une instance du contrôleur
+            // 1. Récupérer la méthode d'action
+            Method method = mappedRoute.getMethod();
+
+            // 2. Contrôle d'authentification (@Auth)
+            if (!checkAuth(method, req, resp)) {
+                return; // erreur 401/403 déjà envoyée
+            }
+
+            // 3. Créer une instance du contrôleur
             Object controller = mappedRoute.getController()
                     .getDeclaredConstructor()
                     .newInstance();
 
-            // 2. Récupérer la méthode d'action
-            Method method = mappedRoute.getMethod();
-
-            // 3. Préparer les paramètres de la méthode
+            // 4. Préparer les paramètres de la méthode
             Object[] arguments = resolveParameters(method, req);
 
             Object result = method.invoke(controller, arguments);
@@ -326,10 +406,7 @@ public class FrontController extends HttpServlet {
                 ModelView mv = (ModelView) result;
 
                 for (Map.Entry<String, Object> entry : mv.getModel().entrySet()) {
-
-                    req.setAttribute(
-                            entry.getKey(),
-                            entry.getValue());
+                    req.setAttribute(entry.getKey(), entry.getValue());
                 }
 
                 System.out.println("Vue = " + mv.getView());
@@ -338,17 +415,14 @@ public class FrontController extends HttpServlet {
 
                 System.out.println("Path = " + path);
 
-                System.out.println(
-                        req.getServletContext().getRealPath(path));
+                System.out.println(req.getServletContext().getRealPath(path));
 
                 req.getRequestDispatcher(path).forward(req, resp);
 
             } else if (result != null) {
 
                 resp.getWriter().println("URL : " + url);
-
-                resp.getWriter().println(
-                        "Méthode Java : " + method.getName());
+                resp.getWriter().println("Méthode Java : " + method.getName());
             }
 
         } catch (Exception e) {
